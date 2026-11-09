@@ -1,0 +1,254 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"github.com/google/uuid"
+	"net/http"
+	"net/netip"
+	"os"
+	"time"
+
+	"github.com/Idriz-hax/model-stead/internal/admin"
+	"github.com/Idriz-hax/model-stead/internal/auth"
+	"github.com/Idriz-hax/model-stead/internal/backup"
+	"github.com/Idriz-hax/model-stead/internal/config"
+	"github.com/Idriz-hax/model-stead/internal/database"
+	"github.com/Idriz-hax/model-stead/internal/history"
+	"github.com/Idriz-hax/model-stead/internal/scheduler"
+	"github.com/Idriz-hax/model-stead/internal/server"
+	"github.com/Idriz-hax/model-stead/web"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+)
+
+func main() {
+	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
+		resp, err := http.Get("http://127.0.0.1:8080/ready")
+		if err != nil {
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			os.Exit(1)
+		}
+		return
+	}
+	configPath := os.Getenv("CONFIG_FILE")
+	if configPath == "" {
+		configPath = "config.yaml"
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		log.Error().Err(err).Msg("configuration failed")
+		os.Exit(1)
+	}
+	if len(os.Args) >= 2 && (os.Args[1] == "backup" || os.Args[1] == "restore") {
+		if err := runOperatorCommand(os.Args[1:], cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "backup/restore command failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	level, err := zerolog.ParseLevel(cfg.Logging.Level)
+	if err != nil {
+		log.Error().Err(err).Msg("invalid logging level")
+		os.Exit(1)
+	}
+	zerolog.SetGlobalLevel(level)
+	var processLock *database.ProcessLock
+	if !(len(os.Args) == 3 && os.Args[1] == "create-api-key") {
+		processLock, err = database.AcquireProcessLock(cfg.Database.Path)
+		if err != nil {
+			log.Error().Msg("database is already in use")
+			os.Exit(1)
+		}
+		defer processLock.Close()
+	}
+	db, err := database.Open(cfg.Database.Path)
+	if err != nil {
+		log.Error().Err(err).Msg("database initialization failed")
+		os.Exit(1)
+	}
+	defer db.Close()
+	historyStore := &history.Store{DB: db}
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if _, err := historyStore.RecoverInterrupted(startupCtx); err != nil {
+		startupCancel()
+		log.Error().Err(err).Msg("request history recovery failed")
+		os.Exit(1)
+	}
+	if _, err := historyStore.PurgeBefore(startupCtx, time.Now().UTC().Add(-30*24*time.Hour)); err != nil {
+		startupCancel()
+		log.Error().Err(err).Msg("request history purge failed")
+		os.Exit(1)
+	}
+	startupCancel()
+	adminStore := admin.Store{DB: db}
+	if err := bootstrapAdmin(db, cfg.Auth.Admin.BootstrapUsername, cfg.Auth.Admin.DisplayName, os.Getenv(cfg.Auth.Admin.PasswordEnv)); err != nil {
+		log.Error().Err(err).Msg("admin bootstrap failed")
+		os.Exit(1)
+	}
+	maxWait, err := time.ParseDuration(cfg.Scheduler.MaxWait)
+	if err != nil {
+		log.Error().Err(err).Msg("invalid scheduler max wait")
+		os.Exit(1)
+	}
+	grace, err := time.ParseDuration(cfg.Scheduler.CancellationGrace)
+	if err != nil {
+		log.Error().Err(err).Msg("invalid scheduler cancellation grace")
+		os.Exit(1)
+	}
+	if err = adminStore.SeedSettings(context.Background(), admin.SchedulerSettings{Policy: cfg.Scheduler.Policy, GlobalCapacity: cfg.Scheduler.GlobalCapacity, DefaultWeight: cfg.Scheduler.DefaultWeight, MaxQueued: cfg.Scheduler.MaxQueued, MaxActiveContended: cfg.Scheduler.MaxActiveWhenContended, GlobalMaxQueued: cfg.Scheduler.GlobalMaxQueued, MaxWait: maxWait, WorkConserving: cfg.Scheduler.WorkConserving, CancellationGrace: grace}); err != nil {
+		log.Error().Err(err).Msg("scheduler settings initialization failed")
+		os.Exit(1)
+	}
+	persistedSettings, err := adminStore.Settings(context.Background())
+	if err != nil {
+		log.Error().Err(err).Msg("scheduler settings load failed")
+		os.Exit(1)
+	}
+	if len(os.Args) == 3 && os.Args[1] == "create-api-key" {
+		var id string
+		if err = db.QueryRowContext(context.Background(), `SELECT id FROM users WHERE username=? AND status='active'`, os.Args[2]).Scan(&id); err != nil {
+			fmt.Fprintln(os.Stderr, "active user not found")
+			os.Exit(1)
+		}
+		secret, _, e := auth.CreateAPIKey(context.Background(), db, id, "provisioned")
+		if e != nil {
+			fmt.Fprintln(os.Stderr, "key creation failed")
+			os.Exit(1)
+		}
+		fmt.Println(secret)
+		return
+	}
+	trusted := make([]netip.Prefix, 0, len(cfg.Auth.TrustedProxyCIDRs))
+	for _, v := range cfg.Auth.TrustedProxyCIDRs {
+		p, e := netip.ParsePrefix(v)
+		if e == nil {
+			trusted = append(trusted, p)
+		}
+	}
+	anonymousCIDRs := make([]netip.Prefix, 0, len(cfg.Auth.Anonymous.CIDRs))
+	for _, v := range cfg.Auth.Anonymous.CIDRs {
+		p, e := netip.ParsePrefix(v)
+		if e == nil {
+			anonymousCIDRs = append(anonymousCIDRs, p)
+		}
+	}
+	resolver := auth.NewResolver(db, auth.ResolverConfig{
+		DisableAPIKeys:         !cfg.Auth.APIKeyEnabled,
+		IPFallbackEnabled:      cfg.Auth.IPFallbackEnabled,
+		TrustedProxyPrefixes:   trusted,
+		AnonymousEnabled:       cfg.Auth.Anonymous.Enabled,
+		AllowedAnonymousCIDRs:  anonymousCIDRs,
+		AnonymousSecret:        []byte(os.Getenv(cfg.Auth.Anonymous.SecretEnv)),
+		MaxAnonymousIdentities: cfg.Auth.Anonymous.MaxIdentities,
+	})
+	log.Info().Str("address", cfg.Server.Address).Msg("starting server")
+	grace = persistedSettings.CancellationGrace
+	sched, err := scheduler.New(scheduler.Config{Capacity: persistedSettings.GlobalCapacity, DefaultWeight: persistedSettings.DefaultWeight, DefaultMaxQueued: persistedSettings.MaxQueued, DefaultMaxActiveWhenContended: persistedSettings.MaxActiveContended, GlobalMaxQueued: persistedSettings.GlobalMaxQueued, MaxWait: persistedSettings.MaxWait, WorkConserving: persistedSettings.WorkConserving, DisableWorkConserving: !persistedSettings.WorkConserving, CancellationGrace: grace})
+	if err != nil {
+		log.Error().Err(err).Msg("scheduler initialization failed")
+		os.Exit(1)
+	}
+	httpServer := server.NewHTTPServer(cfg.Server.Address, server.NewWithSchedulerConfig(web.Files, db, server.GatewayConfig{Enabled: cfg.Gateway.Enabled, BaseURL: cfg.Gateway.BaseURL, APIKey: os.Getenv("LLAMA_SWAP_API_KEY"), SpoolDir: cfg.Gateway.SpoolDir, MaxBodyBytes: cfg.Gateway.MaxBodyBytes, SpoolBudgetBytes: cfg.Gateway.SpoolBudgetBytes, RuntimeEnabled: cfg.RuntimeManagement.Enabled, RuntimeBaseURL: cfg.RuntimeManagement.BaseURL, RuntimeAPIKey: os.Getenv(cfg.RuntimeManagement.APIKeyEnv)}, server.AuthConfig{PublicOrigin: cfg.Server.PublicURL, Resolver: resolver}, server.SchedulerConfig{Scheduler: sched, CancellationGrace: grace, History: historyStore}))
+	var stopBackup context.CancelFunc
+	var backupDone chan struct{}
+	if cfg.Backup.Enabled {
+		if err := backup.PrepareDestination(cfg.Backup.Directory); err != nil {
+			log.Error().Msg("backup destination unavailable")
+			os.Exit(1)
+		}
+		interval, _ := time.ParseDuration(cfg.Backup.Interval)
+		maxAge, _ := time.ParseDuration(cfg.Backup.MaxAge)
+		backupCtx, cancel := context.WithCancel(context.Background())
+		stopBackup, backupDone = cancel, make(chan struct{})
+		go func() {
+			defer close(backupDone)
+			backup.RunScheduled(backupCtx, interval, func(ctx context.Context) error {
+				if _, err := backup.OnlineBackupContext(ctx, db, cfg.Backup.Directory); err != nil {
+					return err
+				}
+				return backup.ApplyRetention(cfg.Backup.Directory, maxAge, cfg.Backup.MaxBackups, time.Now().UTC())
+			})
+		}()
+	}
+	purgeCtx, stopPurge := context.WithCancel(context.Background())
+	purgeDone := make(chan struct{})
+	go func() {
+		defer close(purgeDone)
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-purgeCtx.Done():
+				return
+			case <-ticker.C:
+				ctx, cancel := context.WithTimeout(purgeCtx, 5*time.Second)
+				_, e := historyStore.PurgeBefore(ctx, time.Now().UTC().Add(-30*24*time.Hour))
+				cancel()
+				if e != nil {
+					log.Error().Err(e).Msg("request history purge failed")
+				}
+			}
+		}
+	}()
+	serveErr := httpServer.ListenAndServe()
+	if stopBackup != nil {
+		stopBackup()
+		<-backupDone
+	}
+	stopPurge()
+	<-purgeDone
+	if serveErr != nil {
+		log.Error().Err(serveErr).Msg("server stopped")
+		os.Exit(1)
+	}
+}
+
+func runOperatorCommand(args []string, cfg config.Config) error {
+	switch {
+	case len(args) == 1 && args[0] == "backup":
+		if err := backup.PrepareDestination(cfg.Backup.Directory); err != nil {
+			return err
+		}
+		db, err := database.OpenExisting(cfg.Database.Path)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		if _, err := backup.OnlineBackup(db, cfg.Backup.Directory); err != nil {
+			return err
+		}
+		maxAge, err := time.ParseDuration(cfg.Backup.MaxAge)
+		if err != nil {
+			return err
+		}
+		return backup.ApplyRetention(cfg.Backup.Directory, maxAge, cfg.Backup.MaxBackups, time.Now().UTC())
+	case len(args) == 2 && args[0] == "restore":
+		return backup.Restore(args[1], cfg.Database.Path)
+	default:
+		return fmt.Errorf("invalid command")
+	}
+}
+
+func bootstrapAdmin(db *sql.DB, username, displayName, password string) error {
+	if username == "" || displayName == "" || password == "" {
+		return nil
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE role='admin'`).Scan(&count); err != nil {
+		return err
+	}
+	if count != 0 {
+		return nil
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`INSERT INTO users(id,username,display_name,password_hash,role,status) VALUES(?,?,?,?, 'admin','active')`, uuid.NewString(), username, displayName, hash)
+	return err
+}
