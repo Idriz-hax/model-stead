@@ -1,0 +1,16 @@
+services:
+  router:
+    # REPLACE with the image reference selected for your deployment.
+    image: REPLACE_WITH_ROUTER_IMAGE
+    restart: unless-stopped
+    environment:
+      CONFIG_FILE: /app/config.yaml
+      # Supply secret values through the TrueNAS App environment editor.
+      LLAMA_SWAP_API_KEY: ${LLAMA_SWAP_API_KEY:-}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+    ports:
+      - "${ROUTER_BIND_ADDRESS:-127.0.0.1}:${ROUTER_HOST_PORT:?Set ROUTER_HOST_PORT}:8080"
+    volumes:
+      - ${ROUTER_CONFIG_PATH:?Set ROUTER_CONFIG_PATH}:/app/config.yaml:ro
+      - ${ROUTER_DATASET_PATH:?Set ROUTER_DATASET_PATH}:/app/data
+      - ${ROUTER_BACKUP_DATASET_PATH:?Set ROUTER_BACKUP_DATASET_PATH}:/app/backups

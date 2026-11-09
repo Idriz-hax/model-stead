@@ -1,0 +1,10 @@
+/bin/
+/config.yaml
+/data/
+/frontend/node_modules/
+/frontend/dist/
+/frontend/tsconfig.tsbuildinfo
+/router
+/web/dist/*
+!/web/dist/.gitkeep
+.slim/deepwork/

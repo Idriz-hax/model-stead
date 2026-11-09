@@ -1,0 +1,55 @@
+server:
+  address: ":8080"
+  # Public browser origin for Origin checks; leave empty if not configured.
+  public_url: ""
+database:
+  path: "./data/router.db"
+logging:
+  level: "info"
+# Backups are opt-in; the destination must be provisioned by the operator.
+backup:
+  enabled: false
+  directory: ""
+  interval: "24h"
+  max_age: "720h"
+  max_backups: 14
+scheduler:
+  policy: "weighted_round_robin"
+  global_capacity: 4
+  default_weight: 1
+  max_queued: 100
+  max_active_when_contended: 2
+  max_wait: "30m"
+  global_max_queued: 500
+  work_conserving: true
+  cancellation_grace: "30s"
+gateway:
+  enabled: false
+  base_url: "http://127.0.0.1:8000"
+  # Defaults to a private spool directory beside the SQLite database when enabled.
+  spool_dir: ""
+  max_body_bytes: 20971520
+  spool_budget_bytes: 268435456
+# Read-only llama-swap status is independent of the inference gateway.
+runtime_management:
+  enabled: false
+  # Use HTTPS for network hosts; plain HTTP is allowed only on localhost/loopback.
+  base_url: ""
+  # Name of the environment variable holding the llama-swap API key.
+  api_key_env: "RUNTIME_MANAGEMENT_API_KEY"
+auth:
+  # API key authentication remains enabled by default.
+  api_key_enabled: true
+  ip_fallback_enabled: false
+  trusted_proxy_cidrs: []
+  anonymous:
+    enabled: false
+    cidrs: []
+    max_identities: 100000
+    # Required and must name a persistent secret environment variable when enabled.
+    secret_env: ""
+  admin:
+    bootstrap_username: ""
+    display_name: ""
+    # Set username, display name, password env, and server.public_url to enable one-time bootstrap.
+    password_env: ""
