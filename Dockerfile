@@ -23,5 +23,6 @@ COPY config.example.yaml /app/config.example.yaml
 EXPOSE 8080
 USER nonroot:nonroot
 ENV CONFIG_FILE=/app/config.example.yaml
+ENV ROUTER_CONTAINER_PORT=8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD ["/app/router", "healthcheck"]
 ENTRYPOINT ["/app/router"]

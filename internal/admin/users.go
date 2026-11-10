@@ -86,6 +86,52 @@ func (s Store) CreateUser(ctx context.Context, actor string, u User, temporaryPa
 	}
 	return u, tx.Commit()
 }
+
+func (s Store) CreateFirstAdmin(ctx context.Context, u User, password string) (User, error) {
+	u.Username = strings.TrimSpace(u.Username)
+	if len(password) < 12 || len(password) > 1024 {
+		return User{}, errors.New("password must be 12-1024 bytes")
+	}
+	if u.Role != "admin" {
+		return User{}, errors.New("first user must be an administrator")
+	}
+	capacity, err := s.capacity(ctx)
+	if err != nil {
+		return User{}, err
+	}
+	if err = validateUser(u, capacity); err != nil {
+		return User{}, err
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return User{}, err
+	}
+	u.ID, u.Status, u.MustChangePassword = uuid.NewString(), "active", false
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE scheduler_settings SET updated_at=updated_at WHERE id=1`); err != nil {
+		return User{}, err
+	}
+	var count int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE role='admin'`).Scan(&count); err != nil {
+		return User{}, err
+	}
+	if count != 0 {
+		return User{}, errors.New("administrator already exists")
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO users(id,username,display_name,password_hash,role,status,scheduling_weight,max_queued,max_active_contended,must_change_password) VALUES(?,?,?,?,?,'active',?,?,?,0)`, u.ID, u.Username, u.DisplayName, hash, u.Role, u.SchedulingWeight, u.MaxQueued, u.MaxActiveContended)
+	if err != nil {
+		return User{}, err
+	}
+	if err = insertAudit(ctx, tx, u.ID, "admin.bootstrap", "user", u.ID, Redacted{}, userRedacted(u)); err != nil {
+		return User{}, err
+	}
+	return u, tx.Commit()
+}
+
 func userRedacted(u User) Redacted {
 	return Redacted{Username: u.Username, DisplayName: u.DisplayName, Role: u.Role, Status: u.Status, SchedulingWeight: &u.SchedulingWeight, MaxQueued: &u.MaxQueued, MaxActiveContended: &u.MaxActiveContended}
 }

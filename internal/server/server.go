@@ -40,6 +40,7 @@ type AuthConfig struct {
 	PublicOrigin string
 	Resolver     *auth.Resolver
 	SessionTTL   time.Duration
+	Setup        *SetupManager
 }
 
 type SchedulerConfig struct {
@@ -215,6 +216,7 @@ func NewWithSchedulerConfig(static embed.FS, db *sql.DB, cfg GatewayConfig, ac A
 	})
 	if db != nil {
 		registerAuth(mux, db, ac)
+		registerSetup(mux, db, ac)
 		registerAdmin(mux, db, ac, sc.Scheduler, requests, metrics, cfg)
 		if sc.History != nil {
 			registerUserDashboard(mux, db, ac, sc.History, requests)

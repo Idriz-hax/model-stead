@@ -20,3 +20,5 @@
 .bar.unavailable{height:10px!important;min-height:10px;background:repeating-linear-gradient(135deg,#53616d 0 2px,#edf0ee 2px 4px);border:1px solid #53616d}
 @media(max-width:620px){.table-scroll-hint{display:block}}
 .personal-table-wrap:focus-visible{outline:3px solid #1765ce;outline-offset:2px}
+.setup form{gap:14px}.setup-hint{margin:-5px 0 0;color:var(--muted);font-size:12px;line-height:1.6}.setup .error{margin:0}.setup button{margin-top:3px}@media(max-width:620px){.setup.auth{margin:4vh auto;padding:30px 22px}.setup .auth .eyebrow{margin-top:30px}}
+.auth{--muted:#6b7782}.auth .eyebrow{color:#6b7782}.setup fieldset{display:grid;gap:14px;margin:0;padding:0;border:0;min-width:0}

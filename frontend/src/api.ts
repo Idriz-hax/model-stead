@@ -1,5 +1,6 @@
 export type SessionUser = { id: string; username: string; display_name?: string; role: string; must_change_password?: boolean };
 export type Session = { csrf_token: string; user: SessionUser };
+export type SetupInput = {code:string;username:string;display_name:string;password:string;password_confirmation:string};
 export type PersonalUsage = {from:string;to:string;input_tokens:number|null;output_tokens:number|null;requests:number;incomplete_requests:number;days:{date:string;input_tokens:number|null;output_tokens:number|null;requests:number;incomplete:number}[]};
 export type PersonalRequest = {request_id:string;endpoint:string;requested_model:string|null;enqueued_at:string;started_at:string|null;completed_at:string|null;outcome:string;response_status:number|null;input_tokens:number|null;output_tokens:number|null;total_tokens:number|null;usage_status:string};
 export type RuntimeStatus = {enabled:boolean;status:'disabled'|'reachable'|'unauthorized'|'unavailable'|'unsupported'|'malformed';healthy:boolean;configured_models:string[];running_models:string[];sampled_at:string};
@@ -23,6 +24,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 export const api = {
   async me() { const s = await request<Session>('/api/v1/auth/me'); csrf = s.csrf_token; return s; },
+  setupState: () => request<{setup_required:boolean}>('/api/v1/auth/setup-state'),
+  setupAdmin: (code:string,username:string,display_name:string,password:string,password_confirmation:string) => request<{ok:boolean}>('/api/v1/auth/setup',{method:'POST',body:JSON.stringify({code,username,display_name,password,password_confirmation} satisfies SetupInput)}),
   async login(username: string, password: string) { const s = await request<{csrf_token:string}>('/api/v1/auth/login', {method:'POST', headers:{Origin:origin}, body:JSON.stringify({username,password})}); csrf=s.csrf_token; return this.me(); },
   changePassword: (old_password:string,new_password:string) => request<{ok:boolean;user:{role:string;status:string};must_change_password:boolean}>('/api/v1/auth/change-password',{method:'POST',body:JSON.stringify({old_password,new_password})}),
   logout: () => request('/api/v1/auth/logout',{method:'POST'}),

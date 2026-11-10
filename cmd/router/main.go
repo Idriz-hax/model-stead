@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
-	"github.com/google/uuid"
+	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"time"
 
@@ -25,7 +25,11 @@ import (
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
-		resp, err := http.Get("http://127.0.0.1:8080/ready")
+		target, err := healthcheckURL()
+		if err != nil {
+			os.Exit(1)
+		}
+		resp, err := http.Get(target)
 		if err != nil {
 			os.Exit(1)
 		}
@@ -86,10 +90,6 @@ func main() {
 	}
 	startupCancel()
 	adminStore := admin.Store{DB: db}
-	if err := bootstrapAdmin(db, cfg.Auth.Admin.BootstrapUsername, cfg.Auth.Admin.DisplayName, os.Getenv(cfg.Auth.Admin.PasswordEnv)); err != nil {
-		log.Error().Err(err).Msg("admin bootstrap failed")
-		os.Exit(1)
-	}
 	maxWait, err := time.ParseDuration(cfg.Scheduler.MaxWait)
 	if err != nil {
 		log.Error().Err(err).Msg("invalid scheduler max wait")
@@ -123,6 +123,18 @@ func main() {
 		fmt.Println(secret)
 		return
 	}
+	setupManager, setupCode, err := server.NewSetupManager(context.Background(), db)
+	if err != nil {
+		log.Error().Err(err).Msg("admin setup initialization failed")
+		os.Exit(1)
+	}
+	if !setupURLValid(cfg.Server.PublicURL, setupManager.Required()) {
+		log.Error().Msg("server.public_url must be configured as an HTTPS origin while first-admin setup is pending")
+		os.Exit(1)
+	}
+	if setupCode != "" {
+		log.Warn().Str("code", setupCode).Msg("first-admin setup code; keep logs private until setup is complete")
+	}
 	trusted := make([]netip.Prefix, 0, len(cfg.Auth.TrustedProxyCIDRs))
 	for _, v := range cfg.Auth.TrustedProxyCIDRs {
 		p, e := netip.ParsePrefix(v)
@@ -153,7 +165,7 @@ func main() {
 		log.Error().Err(err).Msg("scheduler initialization failed")
 		os.Exit(1)
 	}
-	httpServer := server.NewHTTPServer(cfg.Server.Address, server.NewWithSchedulerConfig(web.Files, db, server.GatewayConfig{Enabled: cfg.Gateway.Enabled, BaseURL: cfg.Gateway.BaseURL, APIKey: os.Getenv("LLAMA_SWAP_API_KEY"), SpoolDir: cfg.Gateway.SpoolDir, MaxBodyBytes: cfg.Gateway.MaxBodyBytes, SpoolBudgetBytes: cfg.Gateway.SpoolBudgetBytes, RuntimeEnabled: cfg.RuntimeManagement.Enabled, RuntimeBaseURL: cfg.RuntimeManagement.BaseURL, RuntimeAPIKey: os.Getenv(cfg.RuntimeManagement.APIKeyEnv)}, server.AuthConfig{PublicOrigin: cfg.Server.PublicURL, Resolver: resolver}, server.SchedulerConfig{Scheduler: sched, CancellationGrace: grace, History: historyStore}))
+	httpServer := server.NewHTTPServer(cfg.Server.Address, server.NewWithSchedulerConfig(web.Files, db, server.GatewayConfig{Enabled: cfg.Gateway.Enabled, BaseURL: cfg.Gateway.BaseURL, APIKey: os.Getenv("LLAMA_SWAP_API_KEY"), SpoolDir: cfg.Gateway.SpoolDir, MaxBodyBytes: cfg.Gateway.MaxBodyBytes, SpoolBudgetBytes: cfg.Gateway.SpoolBudgetBytes, RuntimeEnabled: cfg.RuntimeManagement.Enabled, RuntimeBaseURL: cfg.RuntimeManagement.BaseURL, RuntimeAPIKey: os.Getenv(cfg.RuntimeManagement.APIKeyEnv)}, server.AuthConfig{PublicOrigin: cfg.Server.PublicURL, Resolver: resolver, Setup: setupManager}, server.SchedulerConfig{Scheduler: sched, CancellationGrace: grace, History: historyStore}))
 	var stopBackup context.CancelFunc
 	var backupDone chan struct{}
 	if cfg.Backup.Enabled {
@@ -208,6 +220,14 @@ func main() {
 	}
 }
 
+func healthcheckURL() (string, error) {
+	port, err := config.ContainerPort()
+	if err != nil {
+		return "", err
+	}
+	return "http://" + net.JoinHostPort("127.0.0.1", port) + "/ready", nil
+}
+
 func runOperatorCommand(args []string, cfg config.Config) error {
 	switch {
 	case len(args) == 1 && args[0] == "backup":
@@ -234,21 +254,13 @@ func runOperatorCommand(args []string, cfg config.Config) error {
 	}
 }
 
-func bootstrapAdmin(db *sql.DB, username, displayName, password string) error {
-	if username == "" || displayName == "" || password == "" {
-		return nil
+func setupURLValid(publicURL string, pending bool) bool {
+	if !pending {
+		return true
 	}
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE role='admin'`).Scan(&count); err != nil {
-		return err
+	if config.ValidatePublicOrigin(publicURL) != nil {
+		return false
 	}
-	if count != 0 {
-		return nil
-	}
-	hash, err := auth.HashPassword(password)
-	if err != nil {
-		return err
-	}
-	_, err = db.Exec(`INSERT INTO users(id,username,display_name,password_hash,role,status) VALUES(?,?,?,?, 'admin','active')`, uuid.NewString(), username, displayName, hash)
-	return err
+	u, _ := url.Parse(publicURL)
+	return u.Scheme == "https"
 }

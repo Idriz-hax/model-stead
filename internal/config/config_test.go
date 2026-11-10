@@ -24,6 +24,59 @@ func TestLoadValidAndInvalid(t *testing.T) {
 	}
 }
 
+func TestLoadIgnoresLegacyAdminBootstrapKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	databasePath := filepath.Join(t.TempDir(), "router.db")
+	data := "server:\n  address: ':8080'\ndatabase:\n  path: " + databasePath + "\nlogging:\n  level: info\nauth:\n  admin:\n    bootstrap_username: 123\n    display_name: false\n    password_env: NONEXISTENT_BOOTSTRAP_SECRET\n"
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("legacy bootstrap keys should be ignored: %v", err)
+	}
+}
+
+func TestContainerPortOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	write := func() {
+		t.Helper()
+		if err := os.WriteFile(path, []byte("server:\n  address: '0.0.0.0:8080'\ndatabase:\n  path: "+filepath.Join(t.TempDir(), "router.db")+"\nlogging:\n  level: info\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct{ name, value, want string }{{"unset", "", "0.0.0.0:8080"}, {"custom", "9091", "0.0.0.0:9091"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "unset" {
+				previous, existed := os.LookupEnv("ROUTER_CONTAINER_PORT")
+				t.Cleanup(func() {
+					if existed {
+						_ = os.Setenv("ROUTER_CONTAINER_PORT", previous)
+					} else {
+						_ = os.Unsetenv("ROUTER_CONTAINER_PORT")
+					}
+				})
+				os.Unsetenv("ROUTER_CONTAINER_PORT")
+			} else {
+				t.Setenv("ROUTER_CONTAINER_PORT", tc.value)
+			}
+			write()
+			c, err := Load(path)
+			if err != nil || c.Server.Address != tc.want {
+				t.Fatalf("address=%q err=%v", c.Server.Address, err)
+			}
+		})
+	}
+	for _, value := range []string{"", "abc", "0", "65536"} {
+		t.Run("invalid_"+value, func(t *testing.T) {
+			t.Setenv("ROUTER_CONTAINER_PORT", value)
+			write()
+			if _, err := Load(path); err == nil {
+				t.Fatal("expected invalid port error")
+			}
+		})
+	}
+}
+
 func TestRuntimeManagementDefaultsAndValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	write := func(extra string) error {
@@ -92,7 +145,7 @@ func TestAuthConfigurationDefaultsAndValidation(t *testing.T) {
 			}
 		})
 	}
-	if err := validatePublicOrigin("https://example.com/path"); err == nil {
+	if err := ValidatePublicOrigin("https://example.com/path"); err == nil {
 		t.Fatal("expected invalid public origin")
 	}
 	if _, err := load("auth:\n  anonymous:\n    max_identities: -1\n"); err == nil {
