@@ -8,13 +8,14 @@ Requirements: Go 1.23+, Node.js 22+, npm.
 
 ```sh
 cp config.example.yaml config.yaml
+# Set server.public_url to the exact HTTPS browser origin before first startup.
 make frontend
 go test ./...
 go build -o bin/router ./cmd/router
 ./bin/router
 ```
 
-The UI is at http://localhost:8080; liveness and readiness endpoints are `/health` and `/ready`. `CONFIG_FILE` selects a YAML configuration file (defaults to `config.yaml`). `make frontend` copies the generated Vite assets into the Go embed directory; these generated files are ignored by Git.
+The UI is served at the configured address; liveness and readiness endpoints are `/health` and `/ready`. On a new database, the router requires an exact HTTPS `server.public_url` and prints a one-time administrator setup code in startup logs. Use a TLS reverse proxy at that origin for browser setup; keep logs private until setup is complete. `CONFIG_FILE` selects a YAML configuration file (defaults to `config.yaml`). `make frontend` copies the generated Vite assets into the Go embed directory; these generated files are ignored by Git.
 
 ## Docker
 
@@ -25,7 +26,16 @@ docker run --rm -p 8080:8080 -v model-stead-data:/app/data model-stead
 
 Container defaults use `/app/config.example.yaml` and write SQLite data to `/app/data/router.db`. The image healthcheck calls the executable's `healthcheck` mode against `/ready`. For deployment-specific settings, mount a config file and set `CONFIG_FILE`; ensure the database directory is writable by the non-root container user.
 
-For TrueNAS SCALE 25.10 Custom App deployment, see the [operator guide](docs/deployment/truenas-scale.md) and [Compose template](deploy/truenas/compose.yaml). Application defaults keep the gateway and scheduled backups disabled; the TrueNAS-specific example opts into scheduled backups and keeps the gateway disabled. The image reference remains a replaceable placeholder. The router includes one-shot `backup` and offline `restore <path>` CLI commands.
+For TrueNAS SCALE 25.10 Custom App deployment, see the [operator guide](docs/deployment/truenas-scale.md) and [Compose template](deploy/truenas/compose.yaml). Application defaults keep the gateway and scheduled backups disabled; the TrueNAS-specific example opts into scheduled backups and keeps the gateway disabled. Compose defaults to `ghcr.io/idriz-hax/model-stead:latest`; set `ROUTER_IMAGE` to pin a release tag. Configure `ROUTER_HOST_PORT` (a free host TCP port) independently of `ROUTER_CONTAINER_PORT` (default 8080, shared by listener and healthcheck). Set `ROUTER_CONFIG_PATH`, `ROUTER_DATASET_PATH`, and `ROUTER_BACKUP_DATASET_PATH` to operator-selected host paths. Container mount points stay `/app/config.yaml`, `/app/data`, and `/app/backups`; database, backup, and spool paths in config should use the corresponding persistent mount. The router includes one-shot `backup` and offline `restore <path>` CLI commands.
+
+Published stable GitHub releases publish `ghcr.io/idriz-hax/model-stead:<version>` and `:latest` for `linux/amd64` (for example, replace `<version>` below with the release's `vMAJOR.MINOR.PATCH` tag):
+
+```sh
+docker pull ghcr.io/idriz-hax/model-stead:<version>
+docker pull ghcr.io/idriz-hax/model-stead:latest
+```
+
+After the first image is published, change the GHCR package visibility to **Public** in GitHub package settings to allow unauthenticated pulls. No registry credentials are needed in Compose.
 
 ## Configuration
 
@@ -37,7 +47,7 @@ Supported pass-through routes are `GET /v1/models` and `POST /v1/chat/completion
 
 ## Authentication (Milestone 3)
 
-For initial dashboard access, set `server.public_url` to the exact browser origin (scheme and host, including port if non-default), set `auth.admin.bootstrap_username`, `auth.admin.display_name`, and `auth.admin.password_env`, then provide that password environment variable when starting the router. The first admin is created once; later restarts do not reset the account. Serve login over HTTPS: the session cookie is always `Secure`, `HttpOnly`, `SameSite=Lax`, and `Path=/`.
+On a database with no administrator, open the app through the exact HTTPS origin in `server.public_url`, enter the one-time code printed in startup logs, and choose the username, display name, and password in the browser. The code exists only in process memory and is replaced after a restart while setup is still pending; restrict access to the app and keep startup logs private until setup completes. After the first administrator is created, setup is disabled and normal login continues across restarts. Legacy `auth.admin.*` YAML bootstrap keys are ignored and never create an account. Serve login over HTTPS: the session cookie is always `Secure`, `HttpOnly`, `SameSite=Lax`, and `Path=/`.
 
 Provision a client API key locally after bootstrapping a user: `./bin/router create-api-key <username>` (or the equivalent binary path). The plaintext key is printed once; save it securely. Send it as `Authorization: Bearer <key>` or `X-API-Key`. Only the SHA-256 digest is stored. A supplied invalid/revoked/expired key is rejected and never falls back to IP-based identity.
 
@@ -49,7 +59,7 @@ Every inference POST acquires an in-memory scheduler lease before it is sent ups
 
 ## Administrator dashboard (Milestone 5)
 
-Sign in at the embedded web app using the bootstrapped administrator account. Dashboard sessions use the secure browser cookie and exact `server.public_url` Origin/CSRF checks for mutations. API keys authenticate inference clients, not dashboard administration. Admin APIs are under `/api/v1/admin/` and require an active admin session; the gateway remains disabled by default.
+Sign in at the embedded web app using the administrator account created during first-run setup. Dashboard sessions use the secure browser cookie and exact `server.public_url` Origin/CSRF checks for mutations. API keys authenticate inference clients, not dashboard administration. Admin APIs are under `/api/v1/admin/` and require an active admin session; the gateway remains disabled by default.
 
 The dashboard provides Overview, live Requests, Users, Devices, API keys, Scheduler, and Audit views. Live updates use an admin-session SSE stream with a five-second refresh fallback. Current request records are held only in memory and contain bounded routing metadata; prompts and request bodies are never shown or retained. Admins can cancel queued requests immediately and must confirm interruption of active upstream inference. Clients can also cancel their own current inference by closing its connection.
 

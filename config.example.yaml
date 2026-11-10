@@ -48,8 +48,3 @@ auth:
     max_identities: 100000
     # Required and must name a persistent secret environment variable when enabled.
     secret_env: ""
-  admin:
-    bootstrap_username: ""
-    display_name: ""
-    # Set username, display name, password env, and server.public_url to enable one-time bootstrap.
-    password_env: ""

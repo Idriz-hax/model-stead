@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,12 +49,7 @@ type Config struct {
 			MaxIdentities int64    `yaml:"max_identities"`
 		} `yaml:"anonymous"`
 		TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs"`
-		Admin             struct {
-			BootstrapUsername string `yaml:"bootstrap_username"`
-			DisplayName       string `yaml:"display_name"`
-			PasswordEnv       string `yaml:"password_env"`
-		} `yaml:"admin"`
-		APIKeyEnabled bool `yaml:"api_key_enabled"`
+		APIKeyEnabled     bool     `yaml:"api_key_enabled"`
 	} `yaml:"auth"`
 }
 
@@ -90,6 +86,17 @@ func Load(path string) (Config, error) {
 	if err = yaml.Unmarshal(b, &c); err != nil {
 		return c, fmt.Errorf("parse config: %w", err)
 	}
+	if _, present := os.LookupEnv("ROUTER_CONTAINER_PORT"); present {
+		port, portErr := ContainerPort()
+		if portErr != nil {
+			return c, portErr
+		}
+		host, _, splitErr := net.SplitHostPort(c.Server.Address)
+		if splitErr != nil {
+			return c, fmt.Errorf("server.address must be host:port when ROUTER_CONTAINER_PORT is set: %w", splitErr)
+		}
+		c.Server.Address = net.JoinHostPort(host, port)
+	}
 	if c.Scheduler.Policy != "weighted_round_robin" {
 		return c, errors.New("scheduler.policy must be weighted_round_robin")
 	}
@@ -107,7 +114,7 @@ func Load(path string) (Config, error) {
 		}
 	}
 	if c.Server.PublicURL != "" {
-		if err := validatePublicOrigin(c.Server.PublicURL); err != nil {
+		if err := ValidatePublicOrigin(c.Server.PublicURL); err != nil {
 			return c, err
 		}
 	}
@@ -128,15 +135,6 @@ func Load(path string) (Config, error) {
 		}
 		if len(os.Getenv(c.Auth.Anonymous.SecretEnv)) < 32 {
 			return c, fmt.Errorf("auth.anonymous secret environment variable %s must contain at least 32 bytes", c.Auth.Anonymous.SecretEnv)
-		}
-	}
-	bootstrapConfigured := c.Auth.Admin.BootstrapUsername != "" || c.Auth.Admin.DisplayName != "" || c.Auth.Admin.PasswordEnv != ""
-	if bootstrapConfigured {
-		if c.Auth.Admin.BootstrapUsername == "" || c.Auth.Admin.DisplayName == "" || c.Auth.Admin.PasswordEnv == "" || os.Getenv(c.Auth.Admin.PasswordEnv) == "" {
-			return c, errors.New("auth.admin bootstrap username, display_name, and configured password_env must all be set")
-		}
-		if c.Server.PublicURL == "" {
-			return c, errors.New("server.public_url is required when bootstrapping dashboard authentication")
 		}
 	}
 	if c.Server.Address == "" || c.Database.Path == "" || c.Logging.Level == "" {
@@ -195,7 +193,24 @@ func Load(path string) (Config, error) {
 	return c, nil
 }
 
-func validatePublicOrigin(raw string) error {
+func ContainerPort() (string, error) {
+	raw, ok := os.LookupEnv("ROUTER_CONTAINER_PORT")
+	if !ok {
+		return "8080", nil
+	}
+	port, err := strconv.Atoi(raw)
+	if raw == "" || err != nil || port < 1 || port > 65535 {
+		return "", fmt.Errorf("ROUTER_CONTAINER_PORT must be a decimal TCP port from 1 to 65535")
+	}
+	for _, char := range raw {
+		if char < '0' || char > '9' {
+			return "", fmt.Errorf("ROUTER_CONTAINER_PORT must be a decimal TCP port from 1 to 65535")
+		}
+	}
+	return strconv.Itoa(port), nil
+}
+
+func ValidatePublicOrigin(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" || u.Opaque != "" {
 		return fmt.Errorf("server.public_url must be an absolute HTTP(S) origin with host and no path, query, userinfo, or fragment")
