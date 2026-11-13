@@ -1,5 +1,6 @@
 server:
-  # Keep in sync with ROUTER_CONTAINER_PORT in Compose (default 8080).
+  # Internal listener port; keep in sync with ROUTER_CONTAINER_PORT and the
+  # container-side (last) port in the Compose mapping. Host port may differ.
   address: ":8080"
   # Set to the exact HTTPS browser origin served by your TLS reverse proxy.
   public_url: "https://<router-public-host>"
@@ -28,7 +29,8 @@ scheduler:
 gateway:
   enabled: false
   # If deliberately enabling the gateway, use the TrueNAS node LAN address
-  # and llama-swap's host-published port, not a container-only address.
+  # and llama-swap's host-published port (not its container-only port/address).
+  # Example: http://192.168.1.20:11435 when llama-swap publishes host port 11435.
   base_url: "http://<truenas-node-address>:<llama-swap-host-published-port>"
   # Keep spools under /app/data unless adding a separate persistent volume.
   spool_dir: "/app/data/spool"
