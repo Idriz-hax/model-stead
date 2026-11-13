@@ -44,6 +44,49 @@ func TestSettingsSeedAndRead(t *testing.T) {
 	}
 }
 
+func TestApplicationSettingsPersistenceAndInvalidDoesNotSave(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	want := ApplicationSettings{LogLevel: "info", BackupInterval: "24h", BackupMaxAge: "720h", BackupMaxBackups: 14, AnonymousCIDRs: []string{}, TrustedProxyCIDRs: []string{}, APIKeyEnabled: true}
+	if err := s.SeedApplicationSettings(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ApplicationSettings(ctx)
+	if err != nil || got.LogLevel != want.LogLevel || !got.APIKeyEnabled {
+		t.Fatalf("settings=%+v err=%v", got, err)
+	}
+	bad := want
+	bad.LogLevel = "bogus"
+	if err = s.UpdateApplicationSettings(ctx, "admin", bad); err == nil {
+		t.Fatal("invalid settings saved")
+	}
+	got, err = s.ApplicationSettings(ctx)
+	if err != nil || got.LogLevel != "info" {
+		t.Fatalf("partial write: %+v %v", got, err)
+	}
+}
+
+func TestApplicationSettingsSeedDoesNotOverwriteDatabaseEdits(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	defaults := ApplicationSettings{LogLevel: "info", BackupInterval: "24h", BackupMaxAge: "720h", BackupMaxBackups: 14, AnonymousCIDRs: []string{}, TrustedProxyCIDRs: []string{}}
+	if err := s.SeedApplicationSettings(ctx, defaults); err != nil {
+		t.Fatal(err)
+	}
+	edited := defaults
+	edited.LogLevel = "debug"
+	if err := s.UpdateApplicationSettings(ctx, "admin", edited); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SeedApplicationSettings(ctx, defaults); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ApplicationSettings(ctx)
+	if err != nil || got.LogLevel != "debug" {
+		t.Fatalf("YAML defaults overwrote database edit: %+v err=%v", got, err)
+	}
+}
+
 func TestUpdateSettingsCommitsSettingsAndAudit(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

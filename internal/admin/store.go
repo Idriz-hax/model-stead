@@ -100,10 +100,10 @@ func (s Store) AuditedExec(ctx context.Context, actor, action, targetType, targe
 	return tx.Commit()
 }
 func validAuditAction(v string) bool {
-	return v == "admin.bootstrap" || v == "user.create" || v == "user.update" || v == "user.disable" || v == "user.enable" || v == "user.reset_password" || v == "device.create" || v == "device.update" || v == "api_key.create" || v == "api_key.revoke" || v == "scheduler.update" || v == "request.cancel"
+	return v == "admin.bootstrap" || v == "user.create" || v == "user.update" || v == "user.disable" || v == "user.enable" || v == "user.reset_password" || v == "device.create" || v == "device.update" || v == "api_key.create" || v == "api_key.revoke" || v == "scheduler.update" || v == "request.cancel" || v == "settings.update"
 }
 func validTarget(v string) bool {
-	return v == "user" || v == "device" || v == "api_key" || v == "scheduler" || v == "request"
+	return v == "user" || v == "device" || v == "api_key" || v == "scheduler" || v == "request" || v == "settings"
 }
 func insertAudit(ctx context.Context, tx *sql.Tx, actor, action, targetType, targetID string, before, after Redacted) error {
 	if !validAuditAction(action) || !validTarget(targetType) || len(targetID) == 0 || len(targetID) > 128 {

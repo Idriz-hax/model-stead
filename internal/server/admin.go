@@ -13,6 +13,7 @@ import (
 	"github.com/Idriz-hax/model-stead/internal/admin"
 	"github.com/Idriz-hax/model-stead/internal/observability"
 	"github.com/Idriz-hax/model-stead/internal/scheduler"
+	"github.com/rs/zerolog"
 )
 
 func registerAdmin(m *http.ServeMux, db *sql.DB, ac AuthConfig, sched *scheduler.Scheduler, requests *requestRegistry, metrics *observability.Collector, runtimeCfg ...GatewayConfig) {
@@ -363,6 +364,40 @@ func registerAdmin(m *http.ServeMux, db *sql.DB, ac AuthConfig, sched *scheduler
 			return
 		}
 		write(w, 200, v)
+	}))
+	m.HandleFunc("GET /api/v1/admin/settings", guard(false, func(w http.ResponseWriter, r *http.Request, _ principal) {
+		v, e := store.ApplicationSettings(r.Context())
+		if e != nil {
+			serverError(w, e)
+			return
+		}
+		write(w, 200, map[string]any{"settings": v, "pending_restart": []string{"public_url", "backup", "gateway", "runtime_management", "auth"}})
+	}))
+	m.HandleFunc("PUT /api/v1/admin/settings", guard(true, func(w http.ResponseWriter, r *http.Request, p principal) {
+		var v admin.ApplicationSettings
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		d.DisallowUnknownFields()
+		if d.Decode(&v) != nil {
+			fail(w, 400)
+			return
+		}
+		var extra any
+		if d.Decode(&extra) != io.EOF {
+			fail(w, 400)
+			return
+		}
+		if e := admin.ValidateApplicationSettings(v); e != nil {
+			fail(w, 400)
+			return
+		}
+		if e := store.UpdateApplicationSettings(r.Context(), p.userID, v); e != nil {
+			fail(w, 500)
+			return
+		}
+		if level, e := zerolog.ParseLevel(v.LogLevel); e == nil {
+			zerolog.SetGlobalLevel(level)
+		}
+		write(w, 200, map[string]any{"settings": v, "pending_restart": []string{"public_url", "backup", "gateway", "runtime_management", "auth"}})
 	}))
 	m.HandleFunc("PUT /api/v1/admin/scheduler", guard(true, func(w http.ResponseWriter, r *http.Request, p principal) {
 		if sched == nil {

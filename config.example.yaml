@@ -33,10 +33,11 @@ gateway:
 # Read-only llama-swap status is independent of the inference gateway.
 runtime_management:
   enabled: false
-  # Use HTTPS for network hosts; plain HTTP is allowed only on localhost/loopback.
+  # HTTP(S) is allowed for any host. If using an API key over HTTP, it is sent
+  # in plaintext; HTTPS is recommended. The API key reference is optional.
   base_url: ""
-  # Name of the environment variable holding the llama-swap API key.
-  api_key_env: "RUNTIME_MANAGEMENT_API_KEY"
+  # Optional name of the environment variable holding the llama-swap API key.
+  api_key_env: ""
 auth:
   # API key authentication remains enabled by default.
   api_key_enabled: true

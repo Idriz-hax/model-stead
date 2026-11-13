@@ -88,6 +88,28 @@ func TestRuntimeRequiredArrays(t *testing.T) {
 	}
 }
 
+func TestRuntimeSnapshotWithoutAPIKeyOmitsAuthorization(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("unexpected Authorization header: %q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/health":
+			w.Write([]byte("OK"))
+		case "/v1/models":
+			w.Write([]byte(`{"data":[]}`))
+		case "/running":
+			w.Write([]byte(`{"running":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer up.Close()
+	if got := runtimeSnapshot(context.Background(), up.URL, "").Status; got != "reachable" {
+		t.Fatalf("status=%s", got)
+	}
+}
+
 func TestRuntimeDisabledSnapshotShape(t *testing.T) {
 	v := runtimeStatus{Enabled: false, Status: "disabled", Configured: []string{}, Running: []string{}, SampledAt: time.Now().UTC()}
 	b, err := json.Marshal(v)

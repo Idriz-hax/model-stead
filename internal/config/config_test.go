@@ -89,17 +89,10 @@ func TestRuntimeManagementDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.RuntimeManagement.Enabled || c.RuntimeManagement.APIKeyEnv != "RUNTIME_MANAGEMENT_API_KEY" {
+	if c.RuntimeManagement.Enabled || c.RuntimeManagement.APIKeyEnv != "" {
 		t.Fatalf("unexpected defaults: %+v", c.RuntimeManagement)
 	}
-	if err := write("runtime_management:\n  enabled: true\n  base_url: http://localhost:9999\n"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(path); err == nil {
-		t.Fatal("enabled integration without key should fail")
-	}
-	t.Setenv("RUNTIME_MANAGEMENT_API_KEY", "key")
-	for _, url := range []string{"https://runtime.example:9999", "http://localhost:9999", "http://127.0.0.1:9999", "http://[::1]:9999"} {
+	for _, url := range []string{"https://runtime.example:9999", "http://localhost:9999", "http://127.0.0.1:9999", "http://[::1]:9999", "http://192.0.2.1:9999"} {
 		if err := write("runtime_management:\n  enabled: true\n  base_url: " + url + "\n"); err != nil {
 			t.Fatal(err)
 		}
@@ -107,13 +100,24 @@ func TestRuntimeManagementDefaultsAndValidation(t *testing.T) {
 			t.Errorf("valid runtime URL rejected: %s: %v", url, err)
 		}
 	}
-	for _, url := range []string{"/relative", "ftp://host", "http://user:pass@host", "http://host?q=1", "http://host#fragment", "http://192.0.2.1:9999"} {
+	for _, url := range []string{"/relative", "ftp://host", "http:///path", "http://user:pass@host", "http://host?q=1", "http://host#fragment"} {
 		if err := write("runtime_management:\n  enabled: true\n  base_url: " + url + "\n"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := Load(path); err == nil {
 			t.Errorf("invalid runtime URL accepted: %s", url)
 		}
+	}
+	if err := write("runtime_management:\n  enabled: true\n  base_url: http://runtime.example\n  api_key_env: TEST_RUNTIME_KEY\n"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_RUNTIME_KEY", "")
+	if _, err := Load(path); err == nil {
+		t.Fatal("configured blank key should fail")
+	}
+	t.Setenv("TEST_RUNTIME_KEY", "key")
+	if _, err := Load(path); err != nil {
+		t.Fatalf("configured key: %v", err)
 	}
 }
 

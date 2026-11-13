@@ -76,6 +76,21 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
+	settingsStore := admin.Store{DB: db}
+	if err := settingsStore.SeedApplicationSettings(context.Background(), applicationSettings(cfg)); err != nil {
+		log.Error().Err(err).Msg("application settings initialization failed")
+		os.Exit(1)
+	}
+	appSettings, err := settingsStore.ApplicationSettings(context.Background())
+	if err != nil {
+		log.Error().Err(err).Msg("persisted application settings invalid")
+		os.Exit(1)
+	}
+	applyApplicationSettings(&cfg, appSettings)
+	if err := config.ValidateApplication(cfg); err != nil {
+		log.Error().Err(err).Msg("effective application settings invalid")
+		os.Exit(1)
+	}
 	historyStore := &history.Store{DB: db}
 	startupCtx, startupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if _, err := historyStore.RecoverInterrupted(startupCtx); err != nil {
@@ -218,6 +233,32 @@ func main() {
 		log.Error().Err(serveErr).Msg("server stopped")
 		os.Exit(1)
 	}
+}
+
+func applicationSettings(c config.Config) admin.ApplicationSettings {
+	return admin.ApplicationSettings{PublicURL: c.Server.PublicURL, LogLevel: c.Logging.Level, BackupEnabled: c.Backup.Enabled, BackupInterval: c.Backup.Interval, BackupMaxAge: c.Backup.MaxAge, BackupMaxBackups: c.Backup.MaxBackups, GatewayEnabled: c.Gateway.Enabled, GatewayBaseURL: c.Gateway.BaseURL, GatewayMaxBodyBytes: c.Gateway.MaxBodyBytes, GatewaySpoolBudgetBytes: c.Gateway.SpoolBudgetBytes, RuntimeEnabled: c.RuntimeManagement.Enabled, RuntimeBaseURL: c.RuntimeManagement.BaseURL, RuntimeAPIKeyEnv: c.RuntimeManagement.APIKeyEnv, IPFallbackEnabled: c.Auth.IPFallbackEnabled, AnonymousEnabled: c.Auth.Anonymous.Enabled, AnonymousCIDRs: c.Auth.Anonymous.CIDRs, AnonymousMaxIdentities: c.Auth.Anonymous.MaxIdentities, AnonymousSecretEnv: c.Auth.Anonymous.SecretEnv, TrustedProxyCIDRs: c.Auth.TrustedProxyCIDRs, APIKeyEnabled: c.Auth.APIKeyEnabled}
+}
+func applyApplicationSettings(c *config.Config, s admin.ApplicationSettings) {
+	c.Server.PublicURL = s.PublicURL
+	c.Logging.Level = s.LogLevel
+	c.Backup.Enabled = s.BackupEnabled
+	c.Backup.Interval = s.BackupInterval
+	c.Backup.MaxAge = s.BackupMaxAge
+	c.Backup.MaxBackups = s.BackupMaxBackups
+	c.Gateway.Enabled = s.GatewayEnabled
+	c.Gateway.BaseURL = s.GatewayBaseURL
+	c.Gateway.MaxBodyBytes = s.GatewayMaxBodyBytes
+	c.Gateway.SpoolBudgetBytes = s.GatewaySpoolBudgetBytes
+	c.RuntimeManagement.Enabled = s.RuntimeEnabled
+	c.RuntimeManagement.BaseURL = s.RuntimeBaseURL
+	c.RuntimeManagement.APIKeyEnv = s.RuntimeAPIKeyEnv
+	c.Auth.IPFallbackEnabled = s.IPFallbackEnabled
+	c.Auth.Anonymous.Enabled = s.AnonymousEnabled
+	c.Auth.Anonymous.CIDRs = s.AnonymousCIDRs
+	c.Auth.Anonymous.MaxIdentities = s.AnonymousMaxIdentities
+	c.Auth.Anonymous.SecretEnv = s.AnonymousSecretEnv
+	c.Auth.TrustedProxyCIDRs = s.TrustedProxyCIDRs
+	c.Auth.APIKeyEnabled = s.APIKeyEnabled
 }
 
 func healthcheckURL() (string, error) {

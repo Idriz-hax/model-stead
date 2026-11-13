@@ -76,7 +76,6 @@ type Scheduler struct {
 func Load(path string) (Config, error) {
 	c := Config{}
 	c.Auth.APIKeyEnabled = true
-	c.RuntimeManagement.APIKeyEnv = "RUNTIME_MANAGEMENT_API_KEY"
 	c.Backup = Backup{Interval: "24h", MaxAge: "720h", MaxBackups: 14}
 	c.Scheduler = Scheduler{Policy: "weighted_round_robin", GlobalCapacity: 4, DefaultWeight: 1, MaxQueued: 100, MaxActiveWhenContended: 2, MaxWait: "30m", GlobalMaxQueued: 500, WorkConserving: true, CancellationGrace: "30s"}
 	b, err := os.ReadFile(path)
@@ -180,17 +179,66 @@ func Load(path string) (Config, error) {
 		}
 	}
 	if c.RuntimeManagement.Enabled {
-		if c.RuntimeManagement.APIKeyEnv == "" {
-			c.RuntimeManagement.APIKeyEnv = "RUNTIME_MANAGEMENT_API_KEY"
-		}
 		if err := validateRuntimeURL(c.RuntimeManagement.BaseURL); err != nil {
-			return c, errors.New("runtime_management.base_url must use HTTPS, or HTTP on localhost/loopback, and have no userinfo, query, or fragment")
+			return c, errors.New("runtime_management.base_url must be an HTTP(S) URL with host and no userinfo, query, or fragment")
 		}
-		if strings.TrimSpace(os.Getenv(c.RuntimeManagement.APIKeyEnv)) == "" {
+		if c.RuntimeManagement.APIKeyEnv != "" && strings.TrimSpace(os.Getenv(c.RuntimeManagement.APIKeyEnv)) == "" {
 			return c, fmt.Errorf("runtime_management API key environment variable %s is required", c.RuntimeManagement.APIKeyEnv)
 		}
 	}
 	return c, nil
+}
+
+// ValidateApplication validates editable settings without creating directories or resolving secrets.
+func ValidateApplication(c Config) error {
+	if c.Server.PublicURL != "" {
+		if err := ValidatePublicOrigin(c.Server.PublicURL); err != nil {
+			return err
+		}
+	}
+	if _, err := parseLevel(c.Logging.Level); err != nil {
+		return err
+	}
+	if c.Backup.Enabled {
+		d, e := time.ParseDuration(c.Backup.Interval)
+		a, ae := time.ParseDuration(c.Backup.MaxAge)
+		if strings.TrimSpace(c.Backup.Directory) == "" || e != nil || d <= 0 || ae != nil || a < 0 || c.Backup.MaxBackups < 0 || a == 0 && c.Backup.MaxBackups == 0 {
+			return errors.New("invalid backup settings")
+		}
+	}
+	if c.Gateway.Enabled {
+		if err := validateGatewayURL(c.Gateway.BaseURL); err != nil {
+			return err
+		}
+	}
+	if c.Gateway.MaxBodyBytes < 0 || c.Gateway.SpoolBudgetBytes < 0 {
+		return errors.New("gateway body limits must be non-negative")
+	}
+	if c.RuntimeManagement.Enabled {
+		if err := validateRuntimeURL(c.RuntimeManagement.BaseURL); err != nil {
+			return err
+		}
+		if c.RuntimeManagement.APIKeyEnv != "" && strings.TrimSpace(os.Getenv(c.RuntimeManagement.APIKeyEnv)) == "" {
+			return errors.New("runtime management API key environment variable is required")
+		}
+	}
+	for _, v := range append(append([]string{}, c.Auth.TrustedProxyCIDRs...), c.Auth.Anonymous.CIDRs...) {
+		if _, _, e := net.ParseCIDR(v); e != nil {
+			return errors.New("invalid auth CIDR")
+		}
+	}
+	if c.Auth.Anonymous.MaxIdentities < 0 {
+		return errors.New("invalid anonymous identity limit")
+	}
+	if c.Auth.Anonymous.Enabled {
+		if c.Auth.Anonymous.MaxIdentities == 0 {
+			c.Auth.Anonymous.MaxIdentities = 100000
+		}
+		if c.Auth.Anonymous.SecretEnv == "" || len(os.Getenv(c.Auth.Anonymous.SecretEnv)) < 32 {
+			return errors.New("anonymous secret environment variable must contain at least 32 bytes")
+		}
+	}
+	return nil
 }
 
 func ContainerPort() (string, error) {
@@ -227,21 +275,7 @@ func validateGatewayURL(raw string) error {
 }
 
 func validateRuntimeURL(raw string) error {
-	if err := validateGatewayURL(raw); err != nil {
-		return err
-	}
-	u, _ := url.Parse(raw)
-	if strings.EqualFold(u.Scheme, "https") {
-		return nil
-	}
-	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
-	if host == "localhost" {
-		return nil
-	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		return nil
-	}
-	return errors.New("runtime status credentials require HTTPS except on localhost/loopback")
+	return validateGatewayURL(raw)
 }
 
 func parseLevel(level string) (int, error) {

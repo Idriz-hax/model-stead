@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Idriz-hax/model-stead/internal/database"
 	_ "modernc.org/sqlite"
 )
 
@@ -76,7 +77,10 @@ func writeValidBackup(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`CREATE TABLE goose_db_version (id INTEGER PRIMARY KEY, version_id INTEGER, is_applied BOOLEAN); INSERT INTO goose_db_version(version_id,is_applied) VALUES(4,1)`)
+	_, err = db.Exec(`CREATE TABLE goose_db_version (id INTEGER PRIMARY KEY, version_id INTEGER, is_applied BOOLEAN)`)
+	if err == nil {
+		_, err = db.Exec(`INSERT INTO goose_db_version(version_id,is_applied) VALUES(?,1)`, database.CurrentSchemaVersion)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

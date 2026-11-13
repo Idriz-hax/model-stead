@@ -7,6 +7,7 @@ import (
 
 	"database/sql"
 
+	"github.com/Idriz-hax/model-stead/internal/admin"
 	"github.com/Idriz-hax/model-stead/internal/config"
 	"github.com/Idriz-hax/model-stead/internal/database"
 )
@@ -83,6 +84,31 @@ func TestOperatorBackupAndRestore(t *testing.T) {
 	after, err := os.ReadFile(cfg.Database.Path)
 	if err != nil || string(before) != string(after) {
 		t.Fatalf("target changed on failed restore: %v", err)
+	}
+}
+
+func TestApplyApplicationSettingsOverridesStartupConfig(t *testing.T) {
+	c := config.Config{}
+	c.Database.Path = "/fixed/router.db"
+	c.Server.Address = "127.0.0.1:8080"
+	c.Gateway.SpoolDir = "/fixed/spool"
+	s := admin.ApplicationSettings{PublicURL: "https://router.test", LogLevel: "debug", BackupEnabled: true, BackupInterval: "12h", BackupMaxAge: "240h", BackupMaxBackups: 5, GatewayEnabled: true, GatewayBaseURL: "http://gateway.test", GatewayMaxBodyBytes: 100, GatewaySpoolBudgetBytes: 200, RuntimeEnabled: true, RuntimeBaseURL: "http://runtime.test", RuntimeAPIKeyEnv: "RUNTIME_KEY", IPFallbackEnabled: true, AnonymousEnabled: true, AnonymousCIDRs: []string{"10.0.0.0/8"}, AnonymousMaxIdentities: 9, AnonymousSecretEnv: "ANON_KEY", TrustedProxyCIDRs: []string{"192.168.0.0/16"}, APIKeyEnabled: true}
+	applyApplicationSettings(&c, s)
+	if c.Database.Path != "/fixed/router.db" || c.Server.Address != "127.0.0.1:8080" || c.Gateway.SpoolDir != "/fixed/spool" {
+		t.Fatalf("application settings changed fixed paths: database=%q listener=%q spool=%q", c.Database.Path, c.Server.Address, c.Gateway.SpoolDir)
+	}
+	if c.Server.PublicURL != s.PublicURL || c.Logging.Level != s.LogLevel || c.Backup.Enabled != s.BackupEnabled || c.Backup.Interval != s.BackupInterval || c.Backup.MaxAge != s.BackupMaxAge || c.Backup.MaxBackups != s.BackupMaxBackups || c.Gateway.Enabled != s.GatewayEnabled || c.Gateway.BaseURL != s.GatewayBaseURL || c.Gateway.MaxBodyBytes != s.GatewayMaxBodyBytes || c.Gateway.SpoolBudgetBytes != s.GatewaySpoolBudgetBytes || c.RuntimeManagement.Enabled != s.RuntimeEnabled || c.RuntimeManagement.BaseURL != s.RuntimeBaseURL || c.RuntimeManagement.APIKeyEnv != s.RuntimeAPIKeyEnv || c.Auth.IPFallbackEnabled != s.IPFallbackEnabled || c.Auth.Anonymous.Enabled != s.AnonymousEnabled || len(c.Auth.Anonymous.CIDRs) != len(s.AnonymousCIDRs) || c.Auth.Anonymous.MaxIdentities != s.AnonymousMaxIdentities || c.Auth.Anonymous.SecretEnv != s.AnonymousSecretEnv || len(c.Auth.TrustedProxyCIDRs) != len(s.TrustedProxyCIDRs) || c.Auth.APIKeyEnabled != s.APIKeyEnabled {
+		t.Fatalf("startup settings not applied: %+v", c)
+	}
+	for i := range s.AnonymousCIDRs {
+		if c.Auth.Anonymous.CIDRs[i] != s.AnonymousCIDRs[i] {
+			t.Fatalf("anonymous CIDRs = %v, want %v", c.Auth.Anonymous.CIDRs, s.AnonymousCIDRs)
+		}
+	}
+	for i := range s.TrustedProxyCIDRs {
+		if c.Auth.TrustedProxyCIDRs[i] != s.TrustedProxyCIDRs[i] {
+			t.Fatalf("trusted proxy CIDRs = %v, want %v", c.Auth.TrustedProxyCIDRs, s.TrustedProxyCIDRs)
+		}
 	}
 }
 

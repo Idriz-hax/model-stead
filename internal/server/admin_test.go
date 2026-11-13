@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -146,6 +147,124 @@ func TestRuntimeEndpointUsesAdminSessionGuard(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestApplicationSettingsRouteSecurityAndRedaction(t *testing.T) {
+	h, fx := adminFixture(t)
+	secretRef := "SETTINGS_TEST_SECRET"
+	secretValue := "settings-test-secret-value"
+	t.Setenv(secretRef, secretValue)
+	settings := admin.ApplicationSettings{LogLevel: "info", BackupInterval: "24h", BackupMaxAge: "720h", BackupMaxBackups: 14, AnonymousCIDRs: []string{}, TrustedProxyCIDRs: []string{}, RuntimeAPIKeyEnv: secretRef, AnonymousSecretEnv: secretRef}
+	if err := (admin.Store{DB: fx.db}).SeedApplicationSettings(context.Background(), settings); err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{"GET", "PUT"} {
+		for _, tc := range []struct {
+			user string
+			code int
+		}{{"", 401}, {"user", 403}, {"admin", 200}} {
+			body := ""
+			if method == "PUT" {
+				b, _ := json.Marshal(settings)
+				body = string(b)
+			}
+			w := adminCall(t, h, fx.db, tc.user, method, "/api/v1/admin/settings", body, method == "PUT", method == "PUT" && tc.user == "admin", method == "PUT" && tc.user == "admin")
+			if w.Code != tc.code {
+				t.Errorf("%s user=%q status=%d want=%d: %s", method, tc.user, w.Code, tc.code, w.Body.String())
+			}
+			if tc.user == "admin" && method == "PUT" && strings.Contains(w.Body.String(), secretValue) {
+				t.Errorf("secret value leaked in %s response", method)
+			}
+		}
+	}
+	settings.RuntimeAPIKeyEnv, settings.AnonymousSecretEnv = secretRef, secretRef
+	if err := (admin.Store{DB: fx.db}).UpdateApplicationSettings(context.Background(), "admin", settings); err != nil {
+		t.Fatal(err)
+	}
+	got := adminCall(t, h, fx.db, "admin", "GET", "/api/v1/admin/settings", "", false, false, false)
+	if strings.Contains(got.Body.String(), secretValue) || !strings.Contains(got.Body.String(), secretRef) {
+		t.Errorf("secret handling incorrect in response: %s", got.Body.String())
+	}
+	for _, tc := range []struct {
+		origin, csrf bool
+		code         int
+	}{{false, true, 403}, {true, false, 403}, {true, true, 200}} {
+		b, _ := json.Marshal(settings)
+		w := adminCall(t, h, fx.db, "admin", "PUT", "/api/v1/admin/settings", string(b), true, tc.origin, tc.csrf)
+		if w.Code != tc.code {
+			t.Errorf("origin=%v csrf=%v status=%d want=%d", tc.origin, tc.csrf, w.Code, tc.code)
+		}
+	}
+	b, _ := json.Marshal(settings)
+	w := adminCall(t, h, fx.db, "admin", "PUT", "/api/v1/admin/settings", strings.TrimSuffix(string(b), "}")+`,"unknown":true}`, true, true, true)
+	if w.Code != 400 {
+		t.Fatalf("unknown field status=%d body=%s", w.Code, w.Body.String())
+	}
+	audit := adminCall(t, h, fx.db, "admin", "GET", "/api/v1/admin/audit", "", false, false, false)
+	if audit.Code != 200 || strings.Contains(audit.Body.String(), secretValue) || strings.Contains(audit.Body.String(), secretRef) {
+		t.Fatalf("secret leaked in audit: %d %s", audit.Code, audit.Body.String())
+	}
+}
+
+func TestApplicationSettingsAdminPutSurvivesDatabaseReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "settings.db")
+	db, err := database.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO users(id,username,display_name,role,status) VALUES('admin','admin','Admin','admin','active')`); err != nil {
+		t.Fatal(err)
+	}
+	defaults := admin.ApplicationSettings{LogLevel: "info", BackupInterval: "24h", BackupMaxAge: "720h", BackupMaxBackups: 14, AnonymousCIDRs: []string{}, TrustedProxyCIDRs: []string{}}
+	store := admin.Store{DB: db}
+	if err := store.SeedApplicationSettings(ctx, defaults); err != nil {
+		t.Fatal(err)
+	}
+	sched, err := scheduler.New(scheduler.Config{Capacity: 2, DefaultWeight: 1, DefaultMaxQueued: 20, DefaultMaxActiveWhenContended: 1, GlobalMaxQueued: 100, MaxWait: time.Minute, WorkConserving: true, CancellationGrace: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := adminHandlerWithRegistry(db, sched, newRequestRegistry())
+	updated := defaults
+	updated.PublicURL, updated.LogLevel = "https://saved.test", "debug"
+	put := adminCall(t, h, db, "admin", "PUT", "/api/v1/admin/settings", mustMarshalSettings(t, updated), true, true, true)
+	if put.Code != http.StatusOK {
+		t.Fatalf("PUT status=%d body=%s", put.Code, put.Body.String())
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = database.OpenExisting(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store = admin.Store{DB: db}
+	if err := store.SeedApplicationSettings(ctx, defaults); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.ApplicationSettings(ctx)
+	if err != nil || !reflect.DeepEqual(loaded, updated) {
+		t.Fatalf("loaded settings=%+v err=%v", loaded, err)
+	}
+	h = adminHandlerWithRegistry(db, sched, newRequestRegistry())
+	get := adminCall(t, h, db, "admin", "GET", "/api/v1/admin/settings", "", false, false, false)
+	var response struct {
+		Settings admin.ApplicationSettings `json:"settings"`
+	}
+	if get.Code != http.StatusOK || json.Unmarshal(get.Body.Bytes(), &response) != nil || !reflect.DeepEqual(response.Settings, updated) {
+		t.Fatalf("GET status=%d settings=%+v body=%s", get.Code, response.Settings, get.Body.String())
+	}
+}
+
+func mustMarshalSettings(t *testing.T, v admin.ApplicationSettings) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func TestAdminKeyRevokeAndSchedulerValidation(t *testing.T) {

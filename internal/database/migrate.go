@@ -13,7 +13,7 @@ import (
 var migrations embed.FS
 
 // CurrentSchemaVersion is the latest Goose migration required by this build.
-const CurrentSchemaVersion int64 = 4
+const CurrentSchemaVersion int64 = 5
 
 func Open(path string) (*sql.DB, error) {
 	db, err := OpenExisting(path)

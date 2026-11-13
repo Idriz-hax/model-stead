@@ -1,6 +1,6 @@
 services:
   router:
-    image: ghcr.io/idriz-hax/model-stead:v0.1.0
+    image: ghcr.io/idriz-hax/model-stead:v0.2.0
     restart: unless-stopped
     environment:
       CONFIG_FILE: /app/config.yaml
