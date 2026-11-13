@@ -1,13 +1,16 @@
 server:
+  # Keep in sync with ROUTER_CONTAINER_PORT in Compose (default 8080).
   address: ":8080"
   # Set to the exact HTTPS browser origin served by your TLS reverse proxy.
   public_url: "https://<router-public-host>"
 database:
+  # Keep persistent data on the /app/data mount.
   path: "/app/data/router.db"
 logging:
   level: "info"
 backup:
   enabled: true
+  # Keep backups on the separate /app/backups mount.
   directory: "/app/backups"
   interval: "24h"
   max_age: "720h"
@@ -27,7 +30,8 @@ gateway:
   # If deliberately enabling the gateway, use the TrueNAS node LAN address
   # and llama-swap's host-published port, not a container-only address.
   base_url: "http://<truenas-node-address>:<llama-swap-host-published-port>"
-  spool_dir: ""
+  # Keep spools under /app/data unless adding a separate persistent volume.
+  spool_dir: "/app/data/spool"
   max_body_bytes: 20971520
   spool_budget_bytes: 268435456
 auth:
@@ -39,8 +43,3 @@ auth:
     cidrs: []
     max_identities: 100000
     secret_env: ""
-  admin:
-    bootstrap_username: ""
-    display_name: ""
-    # Supply the value of this named environment variable via TrueNAS.
-    password_env: "ADMIN_BOOTSTRAP_PASSWORD"

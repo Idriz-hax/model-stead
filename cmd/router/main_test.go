@@ -96,3 +96,29 @@ func TestOperatorCommandRejectsMalformedArguments(t *testing.T) {
 		})
 	}
 }
+
+func TestSetupRequiresHTTPSOnlyWhenPending(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		url     string
+		pending bool
+		want    bool
+	}{
+		{"pending without url", "", true, false},
+		{"pending http", "http://example.com", true, false},
+		{"pending valid https", "https://example.com", true, true},
+		{"pending empty https host", "https://", true, false},
+		{"pending https path", "https://example.com/path", true, false},
+		{"pending https query", "https://example.com?x=1", true, false},
+		{"pending https userinfo", "https://user@example.com", true, false},
+		{"not pending without url", "", false, true},
+		{"not pending http", "http://example.com", false, true},
+		{"not pending malformed", "https://", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := setupURLValid(tc.url, tc.pending); got != tc.want {
+				t.Fatalf("setupURLValid(%q, %v) = %v, want %v", tc.url, tc.pending, got, tc.want)
+			}
+		})
+	}
+}

@@ -1,0 +1,39 @@
+name: Publish container image
+on:
+  release:
+    types: [published]
+permissions: {}
+jobs:
+  publish:
+    if: github.event.release.prerelease == false
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+      - name: Validate version tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a stable vMAJOR.MINOR.PATCH release tag" >&2
+            exit 1
+          fi
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Build and publish
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker buildx build --platform linux/amd64 --push \
+            --tag "$image:$RELEASE_TAG" \
+            --tag "$image:latest" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" .
